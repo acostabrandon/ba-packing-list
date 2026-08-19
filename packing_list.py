@@ -354,7 +354,7 @@ def email_text(order: dict) -> str:
         [
             greeting,
             "",
-            "Your Boston Aesthetics shipment is on its way. The shipment details are below.",
+            "Good news - your Boston Aesthetics order is on its way. We have included the important details below so everything is easy to find.",
             "",
             *[fact for fact in facts if fact],
             "",
@@ -389,55 +389,120 @@ def _email_logo_data_uri(logo_path: str | Path | None) -> str:
     return f"data:image/png;base64,{base64.b64encode(output.getvalue()).decode('ascii')}"
 
 
+def _installation_qr_data_uri() -> str:
+    qr_image = qrcode.make(INSTALLATION_URL)
+    output = BytesIO()
+    qr_image.save(output, format="PNG")
+    return f"data:image/png;base64,{base64.b64encode(output.getvalue()).decode('ascii')}"
+
+
 def email_html(order: dict, logo_path: str | Path | None = None) -> str:
     esc = lambda value: html.escape(str(value or ""), quote=True)
     forest = "#173D2B"
     forest_deep = "#0F2D20"
-    sage = "#EEF3ED"
-    ivory = "#F7F4ED"
+    sage = "#EDF4ED"
+    ivory = "#F6F3EC"
     gold = "#B69A61"
     logo_uri = _email_logo_data_uri(logo_path)
+    qr_uri = _installation_qr_data_uri()
     logo = (
         f'<img src="{logo_uri}" width="205" alt="Boston Aesthetics" style="display:block;width:205px;max-width:100%;height:auto;margin:0 auto;border:0;">'
         if logo_uri
         else '<div style="color:#39b54a;font-size:24px;font-weight:700;">Boston Aesthetics</div>'
     )
     facts = [
-        ("Invoice", order.get("invoice_number")),
+        ("Invoice number", order.get("invoice_number")),
         ("Ship date", order.get("ship_date")),
         ("Expected delivery", order.get("delivery_date")),
         ("Carrier", order.get("carrier")),
         ("Tracking number", order.get("tracking")),
-        ("Device SN", order.get("device_serial")),
+        ("ZenTite device SN", order.get("device_serial")),
     ]
     fact_rows = "".join(
-        f'<tr><td style="padding:9px 16px;border-bottom:1px solid #D8E1D8;color:#667268;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">{esc(label)}</td>'
-        f'<td style="padding:9px 16px;border-bottom:1px solid #D8E1D8;color:{forest_deep};font-size:13px;font-weight:700;text-align:right;">{esc(value)}</td></tr>'
+        f'<tr><td class="fact-cell fact-label copy-muted line-border" width="44%" style="padding:12px 16px;border-bottom:1px solid #D7E2D8;color:#637067;font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;">{esc(label)}</td>'
+        f'<td class="fact-cell fact-value copy-primary line-border" style="padding:12px 16px;border-bottom:1px solid #D7E2D8;color:{forest_deep};font-size:14px;font-weight:700;line-height:1.35;text-align:right;word-break:break-word;">{esc(value)}</td></tr>'
         for label, value in facts if value
     )
     item_rows = ""
     for item in order.get("items", []):
         serial = order.get("device_serial", "") if canonical_name(item["name"]) == "unicorn-plus" else item.get("serial", "")
         item_rows += (
-            f'<tr><td style="padding:9px 10px;border-bottom:1px solid #E5E9E3;color:#24372B;font-size:12px;line-height:1.35;">{esc(item["name"])}</td>'
-            f'<td style="padding:9px 10px;border-bottom:1px solid #E5E9E3;color:#657067;font-size:11px;white-space:nowrap;">{esc(serial or "-")}</td>'
-            f'<td style="padding:9px 10px;border-bottom:1px solid #E5E9E3;color:{forest_deep};font-size:12px;font-weight:700;text-align:center;">{int(item["quantity"])}</td></tr>'
+            f'<tr><td class="item-cell item-name copy-primary line-border" bgcolor="#FFFFFF" style="padding:11px 12px;border-bottom:1px solid #E3E9E3;background:#FFFFFF;color:#24372B;font-size:13px;line-height:1.4;">{esc(item["name"])}</td>'
+            f'<td class="item-cell item-value copy-muted line-border" bgcolor="#FFFFFF" style="padding:11px 12px;border-bottom:1px solid #E3E9E3;background:#FFFFFF;color:#657067;font-size:12px;line-height:1.4;word-break:break-word;">{esc(serial or "-")}</td>'
+            f'<td class="item-cell item-value copy-primary line-border" bgcolor="#FFFFFF" style="padding:11px 8px;border-bottom:1px solid #E3E9E3;background:#FFFFFF;color:{forest_deep};font-size:13px;font-weight:700;text-align:center;">{int(item["quantity"])}</td></tr>'
         )
     notes = (
-        f'<div style="margin:0 0 22px;padding:14px 16px;background:{ivory};border-left:3px solid {gold};color:#566158;font-size:12px;line-height:1.6;"><strong style="color:{forest_deep};">Delivery note</strong><br>{esc(order["notes"])}</div>'
+        f'<table class="notes" role="presentation" cellpadding="0" cellspacing="0" width="100%" bgcolor="{ivory}" style="margin:0;background:{ivory};border-collapse:collapse;border-left:4px solid {gold};"><tr><td class="copy-muted" style="padding:16px 18px;color:#59665D;font-size:13px;line-height:1.65;"><strong class="copy-primary" style="display:block;margin-bottom:4px;color:{forest_deep};font-size:13px;">A note for delivery</strong>{esc(order["notes"])}</td></tr></table>'
         if order.get("notes") else ""
     )
-    return f'''<div style="margin:0;background:{ivory};padding:32px 12px;font-family:Arial,Helvetica,sans-serif;color:#24372B;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:640px;margin:0 auto;background:#FFFFFF;border-collapse:collapse;border-top:8px solid {forest};">
-        <tr><td align="center" style="padding:32px 38px 26px;">{logo}<div style="width:38px;height:1px;margin:22px auto 0;background:{gold};font-size:1px;line-height:1px;">&nbsp;</div></td></tr>
-        <tr><td style="padding:0 42px 28px;text-align:center;"><div style="margin:0 0 10px;color:{gold};font-size:9px;font-weight:700;letter-spacing:2.2px;text-transform:uppercase;">Shipment update</div><h1 style="margin:0;color:{forest};font-family:Georgia,'Times New Roman',serif;font-size:30px;font-weight:400;line-height:1.25;">Your order is on its way</h1><p style="margin:16px auto 0;max-width:470px;color:#687269;font-size:13px;line-height:1.7;">Hello{f' {esc(order.get("customer"))}' if order.get('customer') else ''}, your Boston Aesthetics shipment details are ready below.</p></td></tr>
-        <tr><td style="padding:0 42px 28px;"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:{sage};border-collapse:collapse;">{fact_rows}</table></td></tr>
-        <tr><td style="padding:0 42px 28px;"><div style="margin-bottom:8px;color:{gold};font-size:9px;font-weight:700;letter-spacing:1.8px;text-transform:uppercase;">Delivering to</div><div style="color:{forest_deep};font-family:Georgia,'Times New Roman',serif;font-size:19px;">{esc(order.get('customer') or 'Company name')}</div><div style="margin-top:7px;color:#657067;font-size:12px;line-height:1.6;white-space:pre-line;">{esc(order.get('address') or 'Ship To address')}</div></td></tr>
-        <tr><td style="padding:0 42px 28px;"><div style="margin-bottom:10px;color:{forest};font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Inside your shipment</div><table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;border-top:2px solid {forest};"><tr style="background:{forest};"><th style="padding:10px;color:#FFFFFF;font-size:9px;letter-spacing:1px;text-align:left;">ITEM</th><th style="padding:10px;color:#FFFFFF;font-size:9px;letter-spacing:1px;text-align:left;">SERIAL / LOT</th><th style="padding:10px;color:#FFFFFF;font-size:9px;letter-spacing:1px;text-align:center;">QTY</th></tr>{item_rows}</table></td></tr>
-        <tr><td style="padding:0 42px 34px;">{notes}<table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:{forest};"><a href="{INSTALLATION_URL}" style="display:inline-block;padding:13px 19px;color:#FFFFFF;text-decoration:none;font-size:10px;font-weight:700;letter-spacing:1px;">VIEW ZENTITE INSTALLATION</a></td></tr></table></td></tr>
-        <tr><td style="padding:24px 42px;background:{forest_deep};color:#DCE6DE;font-size:10px;line-height:1.7;text-align:center;"><div style="margin-bottom:5px;color:#FFFFFF;font-size:11px;font-weight:700;">Questions about your delivery?</div><a href="mailto:{DELIVERY_EMAIL}" style="color:#B8D8BE;text-decoration:none;">{DELIVERY_EMAIL}</a><div style="margin-top:12px;color:#9FB0A4;">Boston Aesthetics Inc. &nbsp;·&nbsp; Irvine, California</div></td></tr>
-      </table>
-    </div>'''
+    setup_callout = ""
+    if is_zentite(order):
+        setup_callout = f'''<tr><td class="content-pad" style="padding:0 44px 30px;">
+          <table class="setup-card" role="presentation" cellpadding="0" cellspacing="0" width="100%" bgcolor="{sage}" style="background:{sage};border-collapse:collapse;border-left:4px solid {gold};">
+            <tr><td class="qr-cell" width="118" valign="middle" align="center" style="padding:20px 14px 20px 20px;"><a href="{INSTALLATION_URL}" aria-label="Open the ZenTite installation video" style="text-decoration:none;"><img src="{qr_uri}" width="86" height="86" alt="Scan to open the ZenTite installation video" style="display:block;width:86px;height:86px;margin:0 auto;border:7px solid #FFFFFF;"></a></td>
+            <td class="setup-copy" valign="middle" style="padding:20px 22px 20px 4px;"><div class="section-label" style="color:{gold};font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">ZenTite installation</div><div class="copy-primary" style="margin:7px 0;color:{forest_deep};font-family:Georgia,'Times New Roman',serif;font-size:22px;line-height:1.25;">Let's get you set up</div><div class="copy-muted" style="color:#5F6D63;font-size:13px;line-height:1.6;">Scan the QR code or use the button below for a guided installation walkthrough.</div><div style="margin-top:14px;"><a class="setup-button" href="{INSTALLATION_URL}" style="display:inline-block;padding:11px 17px;background:{forest};border-radius:3px;color:#FFFFFF;text-decoration:none;font-size:11px;font-weight:700;letter-spacing:.5px;">OPEN INSTALLATION VIDEO</a></div></td></tr>
+          </table>
+        </td></tr>'''
+    return f'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="x-apple-disable-message-reformatting"><meta name="color-scheme" content="light dark"><meta name="supported-color-schemes" content="light dark">
+<style>
+  :root {{ color-scheme: light dark; supported-color-schemes: light dark; }}
+  html, body {{ width:100% !important; margin:0 !important; padding:0 !important; }}
+  body {{ -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }}
+  table, td {{ border-collapse:collapse; mso-table-lspace:0pt; mso-table-rspace:0pt; }}
+  img {{ border:0; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic; }}
+  a[x-apple-data-detectors] {{ color:inherit !important; text-decoration:none !important; }}
+  @media only screen and (max-width:600px) {{
+    .email-bg {{ padding:0 !important; }}
+    .email-card {{ width:100% !important; max-width:100% !important; }}
+    .content-pad {{ padding-left:22px !important; padding-right:22px !important; }}
+    .hero-title {{ font-size:27px !important; line-height:1.22 !important; }}
+    .hero-copy {{ font-size:15px !important; line-height:1.65 !important; }}
+    .qr-cell, .setup-copy {{ display:block !important; width:auto !important; text-align:center !important; }}
+    .qr-cell {{ padding:20px 20px 8px !important; }}
+    .setup-copy {{ padding:6px 22px 22px !important; }}
+    .fact-cell {{ padding:11px 12px !important; }}
+    .fact-label {{ font-size:10px !important; }}
+    .fact-value {{ font-size:13px !important; }}
+    .item-cell {{ padding:10px 8px !important; font-size:11px !important; }}
+    .item-name {{ font-size:12px !important; }}
+  }}
+  @media (prefers-color-scheme: dark) {{
+    body, .email-bg {{ background:#07170F !important; color:#F5F2E9 !important; }}
+    .email-card {{ background:#10271A !important; }}
+    .copy-primary {{ color:#F7F4ED !important; }}
+    .copy-muted {{ color:#CCD7CE !important; }}
+    .soft-card, .facts, .setup-card, .notes {{ background:#193624 !important; }}
+    .fact-cell, .item-cell {{ background:#10271A !important; }}
+    .line-border {{ border-color:#34523E !important; }}
+    .logo-shell {{ background:#FFFFFF !important; }}
+    .footer-copy {{ color:#C8D2CA !important; }}
+    .setup-button {{ background:#2D7F44 !important; color:#FFFFFF !important; }}
+  }}
+  [data-ogsc] .email-bg {{ background:#07170F !important; }}
+  [data-ogsc] .email-card {{ background:#10271A !important; }}
+  [data-ogsc] .copy-primary {{ color:#F7F4ED !important; }}
+  [data-ogsc] .copy-muted {{ color:#CCD7CE !important; }}
+  [data-ogsc] .soft-card, [data-ogsc] .facts, [data-ogsc] .setup-card, [data-ogsc] .notes {{ background:#193624 !important; }}
+  [data-ogsc] .fact-cell, [data-ogsc] .item-cell {{ background:#10271A !important; }}
+  [data-ogsc] .line-border {{ border-color:#34523E !important; }}
+  [data-ogsc] .logo-shell {{ background:#FFFFFF !important; }}
+</style></head>
+<body class="email-bg" style="margin:0;background:{ivory};padding:0;font-family:Arial,Helvetica,sans-serif;color:#24372B;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">Your Boston Aesthetics shipment is on the way. Tracking and delivery details are inside.</div>
+  <div class="email-bg" style="margin:0;background:{ivory};padding:34px 12px;font-family:Arial,Helvetica,sans-serif;color:#24372B;">
+    <table class="email-card" role="presentation" aria-label="Boston Aesthetics shipment update" cellpadding="0" cellspacing="0" width="100%" bgcolor="#FFFFFF" style="width:100%;max-width:640px;margin:0 auto;background:#FFFFFF;border-collapse:collapse;border-top:8px solid {forest};">
+      <tr><td class="content-pad" align="center" style="padding:28px 44px 22px;"><div class="logo-shell" style="display:inline-block;padding:10px 18px;background:#FFFFFF;border-radius:6px;">{logo}</div></td></tr>
+      <tr><td class="content-pad" style="padding:0 44px 30px;text-align:center;"><div class="section-label" style="margin:0 0 10px;color:{gold};font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;">Shipment update</div><h1 class="hero-title copy-primary" style="margin:0;color:{forest};font-family:Georgia,'Times New Roman',serif;font-size:32px;font-weight:400;line-height:1.2;">Good news - it's headed your way</h1><p class="hero-copy copy-muted" style="margin:16px auto 0;max-width:500px;color:#647168;font-size:15px;line-height:1.65;">Hello{f' {esc(order.get("customer"))} team' if order.get('customer') else ''}, your Boston Aesthetics order has shipped. Here are the details you may want along the way.</p></td></tr>
+      <tr><td class="content-pad" style="padding:0 44px 30px;"><div class="section-label" style="margin-bottom:10px;color:{gold};font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Delivery at a glance</div><table class="facts soft-card" role="presentation" cellpadding="0" cellspacing="0" width="100%" bgcolor="{sage}" style="background:{sage};border-collapse:collapse;">{fact_rows}</table></td></tr>
+      <tr><td class="content-pad" style="padding:0 44px 30px;"><table class="soft-card" role="presentation" cellpadding="0" cellspacing="0" width="100%" bgcolor="{ivory}" style="background:{ivory};border-collapse:collapse;"><tr><td style="padding:18px 20px;"><div class="section-label" style="margin-bottom:7px;color:{gold};font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Delivering to</div><div class="copy-primary" style="color:{forest_deep};font-family:Georgia,'Times New Roman',serif;font-size:20px;line-height:1.3;">{esc(order.get('customer') or 'Company name')}</div><div class="copy-muted" style="margin-top:7px;color:#627067;font-size:13px;line-height:1.65;white-space:pre-line;">{esc(order.get('address') or 'Ship To address')}</div></td></tr></table></td></tr>
+      {setup_callout}
+      <tr><td class="content-pad" style="padding:0 44px 30px;"><div class="section-label" style="margin-bottom:5px;color:{gold};font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Inside your shipment</div><div class="copy-muted" style="margin:0 0 12px;color:#627067;font-size:13px;line-height:1.5;">{len(order.get('items', []))} line items are included in this shipment.</div><table class="item-table" role="table" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;border-top:2px solid {forest};"><tr style="background:{forest};"><th style="padding:11px 12px;color:#FFFFFF;font-size:10px;letter-spacing:.8px;text-align:left;">ITEM</th><th style="padding:11px 12px;color:#FFFFFF;font-size:10px;letter-spacing:.8px;text-align:left;">SERIAL / LOT</th><th width="48" style="padding:11px 8px;color:#FFFFFF;font-size:10px;letter-spacing:.8px;text-align:center;">QTY</th></tr>{item_rows}</table></td></tr>
+      <tr><td class="content-pad" style="padding:0 44px 34px;">{notes}</td></tr>
+      <tr><td class="footer-copy" style="padding:27px 44px;background:{forest_deep};color:#DCE6DE;font-size:11px;line-height:1.7;text-align:center;"><div style="margin-bottom:6px;color:#FFFFFF;font-family:Georgia,'Times New Roman',serif;font-size:17px;">Questions? We're happy to help.</div><a href="mailto:{DELIVERY_EMAIL}" style="color:#BFDCC4;text-decoration:none;font-size:12px;font-weight:700;">{DELIVERY_EMAIL}</a><div style="margin-top:14px;color:#9FB0A4;">Boston Aesthetics Inc. &nbsp;|&nbsp; Irvine, California</div></td></tr>
+    </table>
+  </div>
+</body></html>'''
 
 
 def _fit_text(value: str, font: str, size: float, max_width: float) -> str:
