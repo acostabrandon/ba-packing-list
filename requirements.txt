@@ -1,0 +1,6 @@
+streamlit>=1.40,<2
+pdfplumber>=0.11,<1
+reportlab>=4.2,<5
+qrcode[pil]>=8,<9
+pandas>=2.2,<3
+Pillow>=10,<13
