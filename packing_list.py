@@ -7,6 +7,7 @@ import base64
 import html
 import re
 from typing import BinaryIO, Iterable
+from urllib.parse import quote_plus
 
 import pdfplumber
 import qrcode
@@ -23,6 +24,8 @@ INSTALLATION_URL = (
     "brandon_acosta_bostonaesthetics_com/IQBzp1k2UQ-GQq00bctNXZZaAVaP_pnTV7AYq4GCEC25f8k"
 )
 DELIVERY_EMAIL = "brandon.acosta@bostonaesthetics.com"
+TRACKING_EMAIL = "info@bostonaesthetics.com"
+AERONET_TRACKING_URL = "https://www.aeronet.com/tracking/?referencenumber=&housebill="
 GREEN = colors.HexColor("#39B54A")
 GREEN_DARK = colors.HexColor("#258D36")
 INK = colors.HexColor("#171A18")
@@ -334,8 +337,17 @@ def email_subject(order: dict) -> str:
     return f"Your Boston Aesthetics shipment{suffix}"
 
 
+def tracking_url(order: dict) -> str:
+    tracking = str(order.get("tracking") or "").strip()
+    carrier = str(order.get("carrier") or "").lower()
+    if tracking and "aeronet" in carrier:
+        return f"{AERONET_TRACKING_URL}{quote_plus(tracking)}"
+    return ""
+
+
 def email_text(order: dict) -> str:
     greeting = f"Hello {order['customer']}," if order.get("customer") else "Hello,"
+    shipment_tracking_url = tracking_url(order)
     facts = [
         order.get("invoice_number") and f"Invoice: {order['invoice_number']}",
         order.get("invoice_date") and f"Invoice date: {order['invoice_date']}",
@@ -343,6 +355,7 @@ def email_text(order: dict) -> str:
         order.get("delivery_date") and f"Expected delivery: {order['delivery_date']}",
         order.get("carrier") and f"Carrier: {order['carrier']}",
         order.get("tracking") and f"Tracking number: {order['tracking']}",
+        shipment_tracking_url and f"Track shipment: {shipment_tracking_url}",
         order.get("device_serial") and f"ZenTite / Unicorn+ device SN: {order['device_serial']}",
     ]
     content_lines = []
@@ -370,7 +383,7 @@ def email_text(order: dict) -> str:
             "ZenTite installation video:",
             INSTALLATION_URL,
             "",
-            f"Questions about delivery? Contact {DELIVERY_EMAIL}.",
+            f"Questions about delivery? Contact {TRACKING_EMAIL}.",
             "",
             "Boston Aesthetics Inc.",
             "1 Peters Canyon Rd, Suite 100",
@@ -405,6 +418,7 @@ def email_html(order: dict, logo_path: str | Path | None = None) -> str:
     gold = "#B69A61"
     logo_uri = _email_logo_data_uri(logo_path)
     qr_uri = _installation_qr_data_uri()
+    shipment_tracking_url = tracking_url(order)
     logo = (
         f'<img src="{logo_uri}" width="205" alt="Boston Aesthetics" style="display:block;width:205px;max-width:100%;height:auto;margin:0 auto;border:0;">'
         if logo_uri
@@ -418,11 +432,20 @@ def email_html(order: dict, logo_path: str | Path | None = None) -> str:
         ("Tracking number", order.get("tracking")),
         ("ZenTite device SN", order.get("device_serial")),
     ]
-    fact_rows = "".join(
-        f'<tr><td class="fact-cell fact-label copy-muted line-border" width="44%" style="padding:12px 16px;border-bottom:1px solid #D7E2D8;color:#637067;font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;">{esc(label)}</td>'
-        f'<td class="fact-cell fact-value copy-primary line-border" style="padding:12px 16px;border-bottom:1px solid #D7E2D8;color:{forest_deep};font-size:14px;font-weight:700;line-height:1.35;text-align:right;word-break:break-word;">{esc(value)}</td></tr>'
-        for label, value in facts if value
-    )
+    fact_rows = ""
+    for label, value in facts:
+        if not value:
+            continue
+        rendered_value = esc(value)
+        if label == "Tracking number" and shipment_tracking_url:
+            rendered_value = (
+                f'<a class="tracking-link" href="{esc(shipment_tracking_url)}" '
+                f'style="color:#1E6F3A;text-decoration:underline;text-underline-offset:2px;">{esc(value)}</a>'
+            )
+        fact_rows += (
+            f'<tr><td class="fact-cell fact-label copy-muted line-border" width="44%" style="padding:12px 16px;border-bottom:1px solid #D7E2D8;color:#637067;font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;">{esc(label)}</td>'
+            f'<td class="fact-cell fact-value copy-primary line-border" style="padding:12px 16px;border-bottom:1px solid #D7E2D8;color:{forest_deep};font-size:14px;font-weight:700;line-height:1.35;text-align:right;word-break:break-word;">{rendered_value}</td></tr>'
+        )
     item_rows = ""
     for item in order.get("items", []):
         serial = order.get("device_serial", "") if canonical_name(item["name"]) == "unicorn-plus" else item.get("serial", "")
@@ -478,6 +501,7 @@ def email_html(order: dict, logo_path: str | Path | None = None) -> str:
     .logo-shell {{ background:#FFFFFF !important; }}
     .footer-copy {{ color:#C8D2CA !important; }}
     .setup-button {{ background:#2D7F44 !important; color:#FFFFFF !important; }}
+    .tracking-link {{ color:#BFDCC4 !important; }}
   }}
   [data-ogsc] .email-bg {{ background:#07170F !important; }}
   [data-ogsc] .email-card {{ background:#10271A !important; }}
@@ -487,6 +511,7 @@ def email_html(order: dict, logo_path: str | Path | None = None) -> str:
   [data-ogsc] .fact-cell, [data-ogsc] .item-cell {{ background:#10271A !important; }}
   [data-ogsc] .line-border {{ border-color:#34523E !important; }}
   [data-ogsc] .logo-shell {{ background:#FFFFFF !important; }}
+  [data-ogsc] .tracking-link {{ color:#BFDCC4 !important; }}
 </style></head>
 <body class="email-bg" style="margin:0;background:{ivory};padding:0;font-family:Arial,Helvetica,sans-serif;color:#24372B;">
   <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">Your Boston Aesthetics shipment is on the way. Tracking and delivery details are inside.</div>
@@ -497,9 +522,9 @@ def email_html(order: dict, logo_path: str | Path | None = None) -> str:
       <tr><td class="content-pad" style="padding:0 44px 30px;"><div class="section-label" style="margin-bottom:10px;color:{gold};font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Delivery at a glance</div><table class="facts soft-card" role="presentation" cellpadding="0" cellspacing="0" width="100%" bgcolor="{sage}" style="background:{sage};border-collapse:collapse;">{fact_rows}</table></td></tr>
       <tr><td class="content-pad" style="padding:0 44px 30px;"><table class="soft-card" role="presentation" cellpadding="0" cellspacing="0" width="100%" bgcolor="{ivory}" style="background:{ivory};border-collapse:collapse;"><tr><td style="padding:18px 20px;"><div class="section-label" style="margin-bottom:7px;color:{gold};font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Delivering to</div><div class="copy-primary" style="color:{forest_deep};font-family:Georgia,'Times New Roman',serif;font-size:20px;line-height:1.3;">{esc(order.get('customer') or 'Company name')}</div><div class="copy-muted" style="margin-top:7px;color:#627067;font-size:13px;line-height:1.65;white-space:pre-line;">{esc(order.get('address') or 'Ship To address')}</div></td></tr></table></td></tr>
       {setup_callout}
-      <tr><td class="content-pad" style="padding:0 44px 30px;"><div class="section-label" style="margin-bottom:5px;color:{gold};font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Inside your shipment</div><div class="copy-muted" style="margin:0 0 12px;color:#627067;font-size:13px;line-height:1.5;">{len(order.get('items', []))} line items are included in this shipment.</div><table class="item-table" role="table" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;border-top:2px solid {forest};"><tr style="background:{forest};"><th style="padding:11px 12px;color:#FFFFFF;font-size:10px;letter-spacing:.8px;text-align:left;">ITEM</th><th style="padding:11px 12px;color:#FFFFFF;font-size:10px;letter-spacing:.8px;text-align:left;">SERIAL / LOT</th><th width="48" style="padding:11px 8px;color:#FFFFFF;font-size:10px;letter-spacing:.8px;text-align:center;">QTY</th></tr>{item_rows}</table></td></tr>
+      <tr><td class="content-pad" style="padding:0 44px 30px;"><div class="section-label" style="margin-bottom:10px;color:{gold};font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Inside your shipment</div><table class="item-table" role="table" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;border-top:2px solid {forest};"><tr style="background:{forest};"><th style="padding:11px 12px;color:#FFFFFF;font-size:10px;letter-spacing:.8px;text-align:left;">ITEM</th><th style="padding:11px 12px;color:#FFFFFF;font-size:10px;letter-spacing:.8px;text-align:left;">SERIAL / LOT</th><th width="48" style="padding:11px 8px;color:#FFFFFF;font-size:10px;letter-spacing:.8px;text-align:center;">QTY</th></tr>{item_rows}</table></td></tr>
       <tr><td class="content-pad" style="padding:0 44px 34px;">{notes}</td></tr>
-      <tr><td class="footer-copy" style="padding:27px 44px;background:{forest_deep};color:#DCE6DE;font-size:11px;line-height:1.7;text-align:center;"><div style="margin-bottom:6px;color:#FFFFFF;font-family:Georgia,'Times New Roman',serif;font-size:17px;">Questions? We're happy to help.</div><a href="mailto:{DELIVERY_EMAIL}" style="color:#BFDCC4;text-decoration:none;font-size:12px;font-weight:700;">{DELIVERY_EMAIL}</a><div style="margin-top:14px;color:#9FB0A4;">Boston Aesthetics Inc. &nbsp;|&nbsp; Irvine, California</div></td></tr>
+      <tr><td class="footer-copy" style="padding:27px 44px;background:{forest_deep};color:#DCE6DE;font-size:11px;line-height:1.7;text-align:center;"><div style="margin-bottom:6px;color:#FFFFFF;font-family:Georgia,'Times New Roman',serif;font-size:17px;">Questions? We're happy to help.</div><a href="mailto:{TRACKING_EMAIL}" style="color:#BFDCC4;text-decoration:none;font-size:12px;font-weight:700;">{TRACKING_EMAIL}</a><div style="margin-top:14px;color:#9FB0A4;">Boston Aesthetics Inc. &nbsp;|&nbsp; Irvine, California</div></td></tr>
     </table>
   </div>
 </body></html>'''
