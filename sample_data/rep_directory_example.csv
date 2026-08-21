@@ -1,0 +1,3 @@
+name,title,address1,address2,city,state,postal_code,phone,email,verified,email_verified,active,source_note
+Garrett Rolfe,Territory Sales Manager,729 Old Metairie Drive,,Metairie,LA,70001-6304,(318) 676-9697,garrett.rolfe@bostonaesthestics.com,TRUE,FALSE,TRUE,"Address, title, and phone verified from provided details. Email preserved from the contract workbook and requires verification."
+
