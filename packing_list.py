@@ -9,6 +9,7 @@ import re
 from typing import BinaryIO, Iterable
 from urllib.parse import quote_plus
 
+import pandas as pd
 import pdfplumber
 import qrcode
 from PIL import Image
@@ -53,12 +54,32 @@ BUNDLE_ITEMS = [
     {"name": "Return Pad", "description": "Included when Pure+ handpiece is present", "quantity": 1},
 ]
 
+DEMO_TIP_ITEMS = [
+    {"name": "MicroRF 25N", "serial": "0318-26 SD; 0253-26 SD", "quantity": 18, "description": ""},
+    {"name": "MicroRF 49", "serial": "0312-26 SD; 0268-26 SD", "quantity": 12, "description": ""},
+    {
+        "name": "MicroRF 9N",
+        "serial": "286-25 SD; 0268-26 SD; 0268-26 SDF",
+        "quantity": 12,
+        "description": "Verify source lot value 0268-26 SDF before shipment.",
+    },
+    {"name": "MicroRF 25N - NON-STERILE", "serial": "0462-26 SD", "quantity": 1, "description": "Demo unit - non-sterile"},
+    {"name": "MicroRF 49 - NON-STERILE", "serial": "0460-26 SD", "quantity": 1, "description": "Demo unit - non-sterile"},
+    {"name": "MicroRF 9N - NON-STERILE", "serial": "0461-21 SD", "quantity": 1, "description": "Demo unit - non-sterile"},
+]
+
 
 def blank_order() -> dict:
     return {
+        "shipment_type": "customer",
         "customer": "",
+        "recipient_title": "",
+        "phone": "",
+        "email": "",
+        "email_verified": False,
         "address": "",
         "invoice_number": "",
+        "shipment_reference": "",
         "invoice_date": "",
         "ship_date": "",
         "delivery_date": "",
@@ -67,6 +88,42 @@ def blank_order() -> dict:
         "device_serial": "",
         "notes": "",
         "items": [],
+        "reviewed": False,
+        "quality_warnings": [],
+    }
+
+
+def blank_rep_shipment() -> dict:
+    return {
+        **blank_order(),
+        "shipment_type": "rep_demo",
+    }
+
+
+def demo_rep_shipment() -> dict:
+    return {
+        **blank_rep_shipment(),
+        "customer": "Garrett Rolfe",
+        "recipient_title": "Territory Sales Manager",
+        "address": "729 Old Metairie Drive\nMetairie, LA 70001-6304",
+        "phone": "(318) 676-9697",
+        # Preserve the contract-workbook value exactly; the UI flags it as unverified.
+        "email": "garrett.rolfe@bostonaesthestics.com",
+        "email_verified": False,
+        "items": [
+            _item(
+                row["name"],
+                row["description"],
+                row["quantity"],
+                "Demo inventory",
+                serial=row["serial"],
+            )
+            for row in DEMO_TIP_ITEMS
+        ],
+        "quality_warnings": [
+            "Garrett's email is preserved exactly from the source workbook and must be verified before sending.",
+            "The source lot value 0268-26 SDF is preserved exactly and must be verified before shipment.",
+        ],
     }
 
 
@@ -93,6 +150,144 @@ def demo_order() -> dict:
         ],
     }
     return enrich_zentite_bundle(order)
+
+
+def is_rep_shipment(order: dict) -> bool:
+    return order.get("shipment_type") == "rep_demo"
+
+
+def demo_rep_directory() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "name": "Garrett Rolfe",
+                "title": "Territory Sales Manager",
+                "address1": "729 Old Metairie Drive",
+                "address2": "",
+                "city": "Metairie",
+                "state": "LA",
+                "postal_code": "70001-6304",
+                "phone": "(318) 676-9697",
+                "email": "garrett.rolfe@bostonaesthestics.com",
+                "verified": True,
+                "email_verified": False,
+                "active": True,
+                "source_note": "Address, title, and phone verified from provided details. Email preserved from the contract workbook and requires verification.",
+            }
+        ]
+    )
+
+
+def _clean_cell(value: object) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _column_key(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", _clean_cell(value).lower()).strip()
+
+
+def _read_table(source: bytes, filename: str) -> pd.DataFrame:
+    suffix = Path(filename).suffix.lower()
+    stream = BytesIO(source)
+    if suffix == ".csv":
+        return pd.read_csv(stream, dtype=str, keep_default_na=False)
+    if suffix in {".xlsx", ".xlsm"}:
+        sheets = pd.read_excel(stream, sheet_name=None, dtype=str, keep_default_na=False)
+        frames = [frame for frame in sheets.values() if not frame.empty]
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    raise ValueError("Use a CSV or XLSX workbook.")
+
+
+def _mapped_columns(frame: pd.DataFrame, aliases: dict[str, tuple[str, ...]]) -> dict[str, str | None]:
+    available = {_column_key(column): column for column in frame.columns}
+    return {
+        target: next((available[alias] for alias in options if alias in available), None)
+        for target, options in aliases.items()
+    }
+
+
+def _source_bool(value: object, default: bool = False) -> bool:
+    text = _clean_cell(value).lower()
+    if not text:
+        return default
+    return text in {"true", "yes", "y", "1", "active", "verified"}
+
+
+def load_rep_directory(source: bytes, filename: str) -> pd.DataFrame:
+    frame = _read_table(source, filename)
+    aliases = {
+        "name": ("name", "rep name", "sales rep", "sales representative", "employee name"),
+        "title": ("title", "job title", "position"),
+        "address1": ("address1", "address 1", "street address", "shipping address", "address"),
+        "address2": ("address2", "address 2", "suite unit"),
+        "city": ("city",),
+        "state": ("state", "province"),
+        "postal_code": ("postal code", "zip", "zip code", "zipcode"),
+        "phone": ("phone", "phone number", "mobile", "cell"),
+        "email": ("email", "email address", "work email"),
+        "verified": ("verified", "directory verified"),
+        "email_verified": ("email verified",),
+        "active": ("active", "status"),
+        "source_note": ("source note", "notes", "note"),
+    }
+    columns = _mapped_columns(frame, aliases)
+    if not columns["name"]:
+        raise ValueError("No sales-rep name column was detected. Rename it to Name or Sales Rep.")
+    records: list[dict] = []
+    for _, row in frame.iterrows():
+        name = _clean_cell(row[columns["name"]])
+        if not name:
+            continue
+        record = {key: _clean_cell(row[column]) if column else "" for key, column in columns.items()}
+        record["name"] = name
+        record["verified"] = _source_bool(record["verified"], default=False)
+        record["email_verified"] = _source_bool(record["email_verified"], default=False)
+        record["active"] = _source_bool(record["active"], default=True)
+        records.append(record)
+    return pd.DataFrame(records)
+
+
+def load_demo_inventory(source: bytes, filename: str) -> list[dict]:
+    frame = _read_table(source, filename)
+    aliases = {
+        "name": ("name", "description", "item", "product", "product service", "product name", "sku"),
+        "quantity": ("quantity", "qty", "picked", "picked quantity", "quantity picked"),
+        "serial": (
+            "serial",
+            "serial lot",
+            "serial lot notes",
+            "lot number list for packing list",
+            "lot numbers",
+            "lot number",
+            "lot",
+        ),
+        "description": ("source note", "notes", "note"),
+    }
+    columns = _mapped_columns(frame, aliases)
+    if not columns["name"] or not columns["quantity"]:
+        raise ValueError("Inventory needs an Item/Description column and a Quantity/PICKED column.")
+    items: list[dict] = []
+    for _, row in frame.iterrows():
+        name = _clean_cell(row[columns["name"]])
+        quantity_text = _clean_cell(row[columns["quantity"]]).replace(",", "")
+        if not name or not quantity_text:
+            continue
+        try:
+            quantity = max(1, int(float(quantity_text)))
+        except ValueError:
+            continue
+        items.append(
+            _item(
+                name,
+                _clean_cell(row[columns["description"]]) if columns["description"] else "",
+                quantity,
+                "Demo inventory",
+                serial=_clean_cell(row[columns["serial"]]) if columns["serial"] else "",
+            )
+        )
+    return items
 
 
 def _item(name: str, description: str, quantity: int, source: str, serial: str = "") -> dict:
@@ -333,6 +528,8 @@ def sync_device_serial(order: dict) -> dict:
 
 
 def email_subject(order: dict) -> str:
+    if is_rep_shipment(order):
+        return "Your Boston Aesthetics demo shipment has shipped"
     suffix = f" | Invoice {order['invoice_number']}" if order.get("invoice_number") else ""
     return f"Your Boston Aesthetics shipment{suffix}"
 
@@ -345,12 +542,40 @@ def tracking_url(order: dict) -> str:
     return ""
 
 
+def client_delivery_notes(value: str) -> str:
+    """Turn the standard carrier shorthand into clear recipient-facing language."""
+    notes = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not notes:
+        return ""
+    normalized = notes.upper()
+    standard_freight_note = all(
+        phrase in normalized
+        for phrase in (
+            "CALL POC TO SCHEDULE DELIVERY",
+            "DELIVERY HOURS 10-3PM",
+            "PICS OF FREIGHT AT DELIVERY",
+            "LIFTGATE/INSIDE/UNPACK",
+            "REMOVE DEBRIS",
+        )
+    )
+    if standard_freight_note:
+        return (
+            "The delivery team will contact your designated point of contact to schedule delivery "
+            "between 10:00 AM and 3:00 PM. Photos of the freight will be taken at delivery for "
+            "documentation. Liftgate service, inside delivery, unpacking, and debris removal are included."
+        )
+    return notes
+
+
 def email_text(order: dict) -> str:
-    greeting = f"Hello {order['customer']}," if order.get("customer") else "Hello,"
+    greeting = f"Hi {order['customer'].split()[0]}," if is_rep_shipment(order) and order.get("customer") else (
+        f"Hello {order['customer']}," if order.get("customer") else "Hello,"
+    )
     shipment_tracking_url = tracking_url(order)
     facts = [
-        order.get("invoice_number") and f"Invoice: {order['invoice_number']}",
-        order.get("invoice_date") and f"Invoice date: {order['invoice_date']}",
+        is_rep_shipment(order) and order.get("shipment_reference") and f"Shipment reference: {order['shipment_reference']}",
+        not is_rep_shipment(order) and order.get("invoice_number") and f"Invoice: {order['invoice_number']}",
+        not is_rep_shipment(order) and order.get("invoice_date") and f"Invoice date: {order['invoice_date']}",
         order.get("ship_date") and f"Ship date: {order['ship_date']}",
         order.get("delivery_date") and f"Expected delivery: {order['delivery_date']}",
         order.get("carrier") and f"Carrier: {order['carrier']}",
@@ -359,6 +584,7 @@ def email_text(order: dict) -> str:
         order.get("device_serial") and f"ZenTite / Unicorn+ device SN: {order['device_serial']}",
     ]
     content_lines = []
+    delivery_notes = client_delivery_notes(order.get("notes", ""))
     for item in order.get("items", []):
         serial = order.get("device_serial", "") if canonical_name(item["name"]) == "unicorn-plus" else item.get("serial", "")
         serial_text = f" - SN/Lot {serial}" if serial else ""
@@ -367,7 +593,11 @@ def email_text(order: dict) -> str:
         [
             greeting,
             "",
-            "Good news - your Boston Aesthetics order is on its way. We have included the important details below so everything is easy to find.",
+            (
+                "Your Boston Aesthetics demo shipment is on its way. We have included the important details below so everything is easy to find."
+                if is_rep_shipment(order)
+                else "Good news - your Boston Aesthetics order is on its way. We have included the important details below so everything is easy to find."
+            ),
             "",
             *[fact for fact in facts if fact],
             "",
@@ -375,13 +605,12 @@ def email_text(order: dict) -> str:
             order.get("customer", ""),
             order.get("address", ""),
             "",
+            *(["Delivery information:", delivery_notes, ""] if delivery_notes else []),
             "Shipment contents:",
             *content_lines,
             "",
-            order.get("notes") or "Please inspect the shipment upon arrival and retain the packing list for your records.",
-            "",
-            "ZenTite installation video:",
-            INSTALLATION_URL,
+            "Please inspect the shipment upon arrival and retain the packing list for your records.",
+            *(["", "ZenTite installation video:", INSTALLATION_URL] if is_zentite(order) else []),
             "",
             f"Questions about delivery? Contact {TRACKING_EMAIL}.",
             "",
@@ -425,7 +654,7 @@ def email_html(order: dict, logo_path: str | Path | None = None) -> str:
         else '<div style="color:#39b54a;font-size:24px;font-weight:700;">Boston Aesthetics</div>'
     )
     facts = [
-        ("Invoice number", order.get("invoice_number")),
+        ("Shipment reference" if is_rep_shipment(order) else "Invoice number", order.get("shipment_reference") if is_rep_shipment(order) else order.get("invoice_number")),
         ("Ship date", order.get("ship_date")),
         ("Expected delivery", order.get("delivery_date")),
         ("Carrier", order.get("carrier")),
@@ -454,9 +683,10 @@ def email_html(order: dict, logo_path: str | Path | None = None) -> str:
             f'<td class="item-cell item-value copy-muted line-border" bgcolor="#FFFFFF" style="padding:11px 12px;border-bottom:1px solid #E3E9E3;background:#FFFFFF;color:#657067;font-size:12px;line-height:1.4;word-break:break-word;">{esc(serial or "-")}</td>'
             f'<td class="item-cell item-value copy-primary line-border" bgcolor="#FFFFFF" style="padding:11px 8px;border-bottom:1px solid #E3E9E3;background:#FFFFFF;color:{forest_deep};font-size:13px;font-weight:700;text-align:center;">{int(item["quantity"])}</td></tr>'
         )
+    delivery_notes = client_delivery_notes(order.get("notes", ""))
     notes = (
-        f'<table class="notes" role="presentation" cellpadding="0" cellspacing="0" width="100%" bgcolor="{ivory}" style="margin:0;background:{ivory};border-collapse:collapse;border-left:4px solid {gold};"><tr><td class="copy-muted" style="padding:16px 18px;color:#59665D;font-size:13px;line-height:1.65;"><strong class="copy-primary" style="display:block;margin-bottom:4px;color:{forest_deep};font-size:13px;">A note for delivery</strong>{esc(order["notes"])}</td></tr></table>'
-        if order.get("notes") else ""
+        f'<tr><td class="content-pad" style="padding:0 44px 30px;"><table class="notes" role="presentation" cellpadding="0" cellspacing="0" width="100%" bgcolor="{ivory}" style="margin:0;background:{ivory};border-collapse:collapse;border-left:4px solid {gold};"><tr><td class="copy-muted" style="padding:18px 20px;color:#59665D;font-size:13px;line-height:1.65;white-space:pre-line;"><strong class="copy-primary" style="display:block;margin-bottom:7px;color:{forest_deep};font-family:Georgia,\'Times New Roman\',serif;font-size:18px;">Delivery information</strong>{esc(delivery_notes)}</td></tr></table></td></tr>'
+        if delivery_notes else ""
     )
     setup_callout = ""
     if is_zentite(order):
@@ -518,12 +748,12 @@ def email_html(order: dict, logo_path: str | Path | None = None) -> str:
   <div class="email-bg" style="margin:0;background:{ivory};padding:34px 12px;font-family:Arial,Helvetica,sans-serif;color:#24372B;">
     <table class="email-card" role="presentation" aria-label="Boston Aesthetics shipment update" cellpadding="0" cellspacing="0" width="100%" bgcolor="#FFFFFF" style="width:100%;max-width:640px;margin:0 auto;background:#FFFFFF;border-collapse:collapse;border-top:8px solid {forest};">
       <tr><td class="content-pad" align="center" style="padding:28px 44px 22px;"><div class="logo-shell" style="display:inline-block;padding:10px 18px;background:#FFFFFF;border-radius:6px;">{logo}</div></td></tr>
-      <tr><td class="content-pad" style="padding:0 44px 30px;text-align:center;"><div class="section-label" style="margin:0 0 10px;color:{gold};font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;">Shipment update</div><h1 class="hero-title copy-primary" style="margin:0;color:{forest};font-family:Georgia,'Times New Roman',serif;font-size:32px;font-weight:400;line-height:1.2;">Good news - it's headed your way</h1><p class="hero-copy copy-muted" style="margin:16px auto 0;max-width:500px;color:#647168;font-size:15px;line-height:1.65;">Hello{f' {esc(order.get("customer"))} team' if order.get('customer') else ''}, your Boston Aesthetics order has shipped. Here are the details you may want along the way.</p></td></tr>
+      <tr><td class="content-pad" style="padding:0 44px 30px;text-align:center;"><div class="section-label" style="margin:0 0 10px;color:{gold};font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;">Shipment update</div><h1 class="hero-title copy-primary" style="margin:0;color:{forest};font-family:Georgia,'Times New Roman',serif;font-size:32px;font-weight:400;line-height:1.2;">Good news - it's headed your way</h1><p class="hero-copy copy-muted" style="margin:16px auto 0;max-width:500px;color:#647168;font-size:15px;line-height:1.65;">{f'Hi {esc(order.get("customer", "").split()[0])}, your Boston Aesthetics demo shipment has shipped.' if is_rep_shipment(order) and order.get('customer') else f'Hello {esc(order.get("customer"))} team, your Boston Aesthetics order has shipped.' if order.get('customer') else 'Your Boston Aesthetics shipment has shipped.'} Here are the details you may want along the way.</p></td></tr>
       <tr><td class="content-pad" style="padding:0 44px 30px;"><div class="section-label" style="margin-bottom:10px;color:{gold};font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Delivery at a glance</div><table class="facts soft-card" role="presentation" cellpadding="0" cellspacing="0" width="100%" bgcolor="{sage}" style="background:{sage};border-collapse:collapse;">{fact_rows}</table></td></tr>
       <tr><td class="content-pad" style="padding:0 44px 30px;"><table class="soft-card" role="presentation" cellpadding="0" cellspacing="0" width="100%" bgcolor="{ivory}" style="background:{ivory};border-collapse:collapse;"><tr><td style="padding:18px 20px;"><div class="section-label" style="margin-bottom:7px;color:{gold};font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Delivering to</div><div class="copy-primary" style="color:{forest_deep};font-family:Georgia,'Times New Roman',serif;font-size:20px;line-height:1.3;">{esc(order.get('customer') or 'Company name')}</div><div class="copy-muted" style="margin-top:7px;color:#627067;font-size:13px;line-height:1.65;white-space:pre-line;">{esc(order.get('address') or 'Ship To address')}</div></td></tr></table></td></tr>
+      {notes}
       {setup_callout}
       <tr><td class="content-pad" style="padding:0 44px 30px;"><div class="section-label" style="margin-bottom:10px;color:{gold};font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Inside your shipment</div><table class="item-table" role="table" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;border-top:2px solid {forest};"><tr style="background:{forest};"><th style="padding:11px 12px;color:#FFFFFF;font-size:10px;letter-spacing:.8px;text-align:left;">ITEM</th><th style="padding:11px 12px;color:#FFFFFF;font-size:10px;letter-spacing:.8px;text-align:left;">SERIAL / LOT</th><th width="48" style="padding:11px 8px;color:#FFFFFF;font-size:10px;letter-spacing:.8px;text-align:center;">QTY</th></tr>{item_rows}</table></td></tr>
-      <tr><td class="content-pad" style="padding:0 44px 34px;">{notes}</td></tr>
       <tr><td class="footer-copy" style="padding:27px 44px;background:{forest_deep};color:#DCE6DE;font-size:11px;line-height:1.7;text-align:center;"><div style="margin-bottom:6px;color:#FFFFFF;font-family:Georgia,'Times New Roman',serif;font-size:17px;">Questions? We're happy to help.</div><a href="mailto:{TRACKING_EMAIL}" style="color:#BFDCC4;text-decoration:none;font-size:12px;font-weight:700;">{TRACKING_EMAIL}</a><div style="margin-top:14px;color:#9FB0A4;">Boston Aesthetics Inc. &nbsp;|&nbsp; Irvine, California</div></td></tr>
     </table>
   </div>
@@ -580,7 +810,12 @@ def build_packing_list_pdf(order: dict, logo_path: str | Path) -> bytes:
         pdf.drawRightString(574, 742, "PACKING LIST")
         pdf.setFillColor(MUTED)
         pdf.setFont("Helvetica-Bold", 7)
-        pdf.drawRightString(574, 726, f"INVOICE {order.get('invoice_number') or 'PENDING'}")
+        document_reference = (
+            f"DEMO SHIPMENT {order.get('shipment_reference') or ''}".strip()
+            if is_rep_shipment(order)
+            else f"INVOICE {order.get('invoice_number') or 'PENDING'}"
+        )
+        pdf.drawRightString(574, 726, document_reference)
         pdf.setStrokeColor(LINE)
         pdf.setLineWidth(1)
         pdf.line(38, 696, 574, 696)
@@ -596,14 +831,25 @@ def build_packing_list_pdf(order: dict, logo_path: str | Path) -> bytes:
             pdf.setFont("Helvetica-Bold", 16)
             pdf.drawString(38, 654, _fit_text(order.get("customer") or "Company name", "Helvetica-Bold", 16, 260))
             pdf.setFillColor(MUTED)
-            pdf.setFont("Helvetica", 8.5)
+            pdf.setFont("Helvetica", 8)
             address_y = 637
-            for line in _wrap(order.get("address") or "Ship To address", "Helvetica", 8.5, 250, 4):
+            recipient_details = [
+                order.get("recipient_title", "") if is_rep_shipment(order) else "",
+                order.get("address") or "Ship To address",
+                order.get("phone", "") if is_rep_shipment(order) else "",
+                order.get("email", "") if is_rep_shipment(order) else "",
+            ]
+            recipient_text = "\n".join(str(value).strip() for value in recipient_details if str(value or "").strip())
+            for line in _wrap(recipient_text, "Helvetica", 8, 250, 5):
                 pdf.drawString(38, address_y, line)
-                address_y -= 12
+                address_y -= 10
 
             facts = [
-                ("INVOICE DATE", order.get("invoice_date") or "-"),
+                *(
+                    [("REFERENCE", order.get("shipment_reference") or "Demo inventory")]
+                    if is_rep_shipment(order)
+                    else [("INVOICE DATE", order.get("invoice_date") or "-")]
+                ),
                 ("SHIP DATE", order.get("ship_date") or "Pending"),
                 ("DELIVERY DATE", order.get("delivery_date") or "Pending"),
                 ("CARRIER", order.get("carrier") or "Pending"),
@@ -637,24 +883,31 @@ def build_packing_list_pdf(order: dict, logo_path: str | Path) -> bytes:
         pdf.rect(38, table_y - 19, 536, 20, stroke=0, fill=1)
         pdf.setFillColor(colors.white)
         pdf.setFont("Helvetica-Bold", 6.5)
+        serial_column_x = 322 if is_rep_shipment(order) else 442
+        item_column_width = 240 if is_rep_shipment(order) else 350
+        serial_column_width = 214 if is_rep_shipment(order) else 82
         pdf.drawCentredString(53, table_y - 12, "#")
         pdf.drawString(69, table_y - 12, "ITEM")
-        pdf.drawString(442, table_y - 12, "SERIAL / LOT")
+        pdf.drawString(serial_column_x, table_y - 12, "SERIAL / LOT")
         pdf.drawCentredString(556, table_y - 12, "QTY")
         row_y = table_y - 35
         global_start = page_index * page_size
         for index, item in enumerate(chunk, start=1):
             global_index = global_start + index
             serial = order.get("device_serial", "") if canonical_name(item.get("name", "")) == "unicorn-plus" else item.get("serial", "")
+            non_sterile = "non-sterile" in str(item.get("name", "")).lower() or "non sterile" in str(item.get("name", "")).lower()
+            if non_sterile:
+                pdf.setFillColor(colors.HexColor("#FFF1F0"))
+                pdf.rect(38, row_y - 6, 536, 16, stroke=0, fill=1)
             pdf.setFillColor(MUTED)
             pdf.setFont("Helvetica", 6.5)
             pdf.drawCentredString(53, row_y, f"{global_index:02d}")
-            pdf.setFillColor(INK)
+            pdf.setFillColor(colors.HexColor("#A61B1B") if non_sterile else INK)
             pdf.setFont("Helvetica-Bold", 7.5)
-            pdf.drawString(69, row_y, _fit_text(item.get("name", "Shipment item"), "Helvetica-Bold", 7.5, 350))
+            pdf.drawString(69, row_y, _fit_text(item.get("name", "Shipment item"), "Helvetica-Bold", 7.5, item_column_width))
             pdf.setFillColor(GREEN_DARK if canonical_name(item.get("name", "")) == "unicorn-plus" else MUTED)
             pdf.setFont("Helvetica-Bold", 7)
-            pdf.drawString(442, row_y, _fit_text(serial or "-", "Helvetica-Bold", 7, 82))
+            pdf.drawString(serial_column_x, row_y, _fit_text(serial or "-", "Helvetica-Bold", 7, serial_column_width))
             pdf.setFillColor(INK)
             pdf.drawCentredString(556, row_y, str(int(item.get("quantity", 1))))
             pdf.setStrokeColor(LINE)
@@ -665,9 +918,10 @@ def build_packing_list_pdf(order: dict, logo_path: str | Path) -> bytes:
         if last_page:
             panel_y = 92
             panel_h = 78
+            notes_width = 312 if is_zentite(order) else 536
             pdf.setFillColor(colors.HexColor("#F8FAF8"))
             pdf.setStrokeColor(LINE)
-            pdf.rect(38, panel_y, 312, panel_h, stroke=1, fill=1)
+            pdf.rect(38, panel_y, notes_width, panel_h, stroke=1, fill=1)
             pdf.setFillColor(GREEN_DARK)
             pdf.setFont("Helvetica-Bold", 7)
             pdf.drawString(50, panel_y + 61, "DELIVERY NOTES")
@@ -675,30 +929,31 @@ def build_packing_list_pdf(order: dict, logo_path: str | Path) -> bytes:
             pdf.setFont("Helvetica", 7)
             note = order.get("notes") or "Please inspect the shipment upon arrival and retain this packing list for your records."
             note_y = panel_y + 45
-            for line in _wrap(note, "Helvetica", 7, 286, 3):
+            for line in _wrap(note, "Helvetica", 7, notes_width - 26, 3):
                 pdf.drawString(50, note_y, line)
                 note_y -= 10
             pdf.setFillColor(INK)
             pdf.setFont("Helvetica-Bold", 6.5)
             pdf.drawString(50, panel_y + 10, DELIVERY_EMAIL)
 
-            pdf.setFillColor(GREEN_SOFT)
-            pdf.setStrokeColor(colors.HexColor("#CBE5CE"))
-            pdf.rect(360, panel_y, 214, panel_h, stroke=1, fill=1)
-            qr_image = qrcode.make(INSTALLATION_URL)
-            qr_buffer = BytesIO()
-            qr_image.save(qr_buffer, format="PNG")
-            qr_buffer.seek(0)
-            pdf.drawImage(ImageReader(qr_buffer), 371, panel_y + 10, width=58, height=58, mask="auto")
-            pdf.setFillColor(GREEN_DARK)
-            pdf.setFont("Helvetica-Bold", 6.5)
-            pdf.drawString(440, panel_y + 55, "ZENTITE INSTALLATION")
-            pdf.setFillColor(INK)
-            pdf.setFont("Helvetica-Bold", 12)
-            pdf.drawString(440, panel_y + 36, "Scan to watch")
-            pdf.setFillColor(MUTED)
-            pdf.setFont("Helvetica", 6.5)
-            pdf.drawString(440, panel_y + 23, "Setup & installation video")
+            if is_zentite(order):
+                pdf.setFillColor(GREEN_SOFT)
+                pdf.setStrokeColor(colors.HexColor("#CBE5CE"))
+                pdf.rect(360, panel_y, 214, panel_h, stroke=1, fill=1)
+                qr_image = qrcode.make(INSTALLATION_URL)
+                qr_buffer = BytesIO()
+                qr_image.save(qr_buffer, format="PNG")
+                qr_buffer.seek(0)
+                pdf.drawImage(ImageReader(qr_buffer), 371, panel_y + 10, width=58, height=58, mask="auto")
+                pdf.setFillColor(GREEN_DARK)
+                pdf.setFont("Helvetica-Bold", 6.5)
+                pdf.drawString(440, panel_y + 55, "ZENTITE INSTALLATION")
+                pdf.setFillColor(INK)
+                pdf.setFont("Helvetica-Bold", 12)
+                pdf.drawString(440, panel_y + 36, "Scan to watch")
+                pdf.setFillColor(MUTED)
+                pdf.setFont("Helvetica", 6.5)
+                pdf.drawString(440, panel_y + 23, "Setup & installation video")
 
         pdf.setStrokeColor(LINE)
         pdf.setLineWidth(0.6)
